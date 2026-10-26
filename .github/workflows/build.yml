@@ -1,0 +1,123 @@
+name: Build NeuroDrop VST3
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows-x64
+            os: windows-latest
+            optional: false
+            cmake_args: -G "Visual Studio 17 2022" -A x64
+            pluginval_zip: pluginval_Windows.zip
+            pluginval_bin: ./pluginval.exe
+          - name: macOS-Universal
+            os: macos-14
+            optional: false
+            cmake_args: -G Ninja -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+            pluginval_zip: pluginval_macOS.zip
+            pluginval_bin: ./pluginval.app/Contents/MacOS/pluginval
+          - name: Linux-x64
+            os: ubuntu-22.04
+            optional: false
+            cmake_args: -G Ninja
+            pluginval_zip: pluginval_Linux.zip
+            pluginval_bin: ./pluginval
+          - name: Linux-ARM64
+            os: ubuntu-22.04-arm
+            optional: false         # pluginval gibt es nicht fuer Linux-ARM -> nur Engine-Tests
+            cmake_args: -G Ninja
+            pluginval_zip: ''
+            pluginval_bin: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux-Abhaengigkeiten
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev libxext-dev \
+            libgl1-mesa-dev xvfb
+
+      - name: macOS-Abhaengigkeiten
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Konfigurieren
+        shell: bash
+        run: cmake -S . -B build ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release -DNEURODROP_BUILD_TESTS=ON
+
+      - name: Bauen
+        shell: bash
+        run: cmake --build build --config Release --parallel 4 --target NeuroDrop_VST3 NeuroDropTest
+
+      - name: Engine-Tests (Analyse + Render)
+        shell: bash
+        run: |
+          exe=$(find build -type f \( -name NeuroDropTest -o -name NeuroDropTest.exe \) -path "*Release*" | head -1)
+          "$exe" test-renders
+
+      - name: Bundle finden
+        id: bundle
+        shell: bash
+        run: |
+          b=$(find build -type d -name "NeuroDrop.vst3" -path "*Release/VST3*" | head -1)
+          echo "path=$b" >> "$GITHUB_OUTPUT"
+          echo "Bundle: $b"
+
+      - name: macOS ad-hoc signieren
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - "${{ steps.bundle.outputs.path }}"
+
+      - name: pluginval
+        if: matrix.pluginval_zip != ''
+        shell: bash
+        run: |
+          curl -sSL -o pv.zip "https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval_zip }}"
+          unzip -o -q pv.zip
+          chmod +x ${{ matrix.pluginval_bin }} || true
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a ${{ matrix.pluginval_bin }} --strictness-level 5 --timeout-ms 600000 --validate "${{ steps.bundle.outputs.path }}"
+          else
+            ${{ matrix.pluginval_bin }} --strictness-level 5 --timeout-ms 600000 --validate "${{ steps.bundle.outputs.path }}"
+          fi
+
+      - name: ZIP packen
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -R "${{ steps.bundle.outputs.path }}" dist/
+          cp README.md dist/LIESMICH.md
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip ../NeuroDrop-${{ matrix.name }}.zip . > /dev/null
+          else
+            zip -qry ../NeuroDrop-${{ matrix.name }}.zip .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroDrop-${{ matrix.name }}
+          path: NeuroDrop-${{ matrix.name }}.zip
+
+      - name: Release (bei Tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NeuroDrop-${{ matrix.name }}.zip

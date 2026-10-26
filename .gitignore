@@ -1,0 +1,8 @@
+build*/
+dist/
+test-renders/
+hostcheck-out/
+.DS_Store
+*.user
+.vscode/
+.idea/
