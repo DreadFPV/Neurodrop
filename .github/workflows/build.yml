@@ -22,7 +22,7 @@ jobs:
           - name: Windows-x64
             os: windows-latest
             optional: false
-            cmake_args: -G "Visual Studio 17 2022" -A x64
+            cmake_args: -A x64
             pluginval_zip: pluginval_Windows.zip
             pluginval_bin: ./pluginval.exe
           - name: macOS-Universal
